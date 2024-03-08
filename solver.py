@@ -6,9 +6,11 @@ Options for the active-set QP solver
 class solverOptions:
     def __init__(self):
         self.print_level = "Verbose"
+        self.step_tol = 1e-6
         self.term_tol = 1e-6
         self.feas_tol = 1e-9
-        self.max_iter = 100
+        self.max_iter = 1000
+
 
 '''
 Active-set QP solver
@@ -16,6 +18,13 @@ Active-set QP solver
 class Solver:
     def __init__(self, solver_options):
         self.solver_options = solver_options
+    
+    def print_final_status(self, status):
+        match status:
+            case 0:
+                print("A KKT point is found!")
+            case 1:
+                print("Maximum number of iterations reached.")
     
     def active_set_solve(self, G, c, A, b, x0, W0):
         '''
@@ -47,8 +56,8 @@ class Solver:
         Wk = np.copy(W0)
         num_iter = 0
 
-        output_header = '%10s %20s %20s %20s %20s' % \
-                       ('iter', 'f_val', 'feas', 'alpha', '||p_k||')
+        output_header = '%10s %20s %20s %20s %20s %20s' % \
+                       ('iter', 'f_val', 'feas', 'alpha', '||p_k||', 'size_working_set')
 
         alpha = 0
         pk = np.zeros(np.shape(xk))
@@ -65,19 +74,14 @@ class Solver:
                 tmp_2 = np.hstack((0, cons_k[tmp_1[0]]))
                 feasibility = np.linalg.norm(tmp_2, np.inf)
             
-            # Evaluate the first-order optimality
-            first_order_opt = np.linalg.norm(G @ xk + c, np.inf)
-
-            # Get the active constraints indices
-            active_cons_idx = np.where(Wk == True)[0] + 1
-            
             # Print the iteration information
             if self.solver_options.print_level == "Verbose":
+                active_cons_idx = np.where(Wk == True)[0] + 1
                 # Print header every 10 iterstion
                 if num_iter % 10 == 0:
                     print(output_header)
-                output_line = '%10d %20E %20E %20E %20E' % \
-                              (num_iter, fk[0][0], feasibility, alpha, np.linalg.norm(pk, 2))
+                output_line = '%10d %20E %20E %20E %20E %20d' % \
+                              (num_iter, fk[0][0], feasibility, alpha, np.linalg.norm(pk, 2), np.size(np.where(Wk == True)))
                 print(output_line)
 
             # Initialize active constraints matrix
@@ -85,24 +89,21 @@ class Solver:
             b_active = np.copy(b[Wk])
             
             # Solve the QP with the current working set
-            # gk = G @ xk + c
-            # p0 = np.zeros(np.shape(gk)) # starting point
-            # p_sol, lambda_sol, status = self.solve_eq_qp(G, gk, A_active, b_active, p0)
             x_sol, lambda_sol, status = self.solve_eq_qp(G, c, A_active, b_active, xk)
             pk = x_sol - xk
             # If xk is a minimizer with Wk
-            if np.linalg.norm(pk, np.inf) < self.solver_options.term_tol:
+            if np.linalg.norm(pk, np.inf) < self.solver_options.step_tol:
                 alpha = 0
                 # If the KKT conditions are satisfied, return
                 if np.all(lambda_sol >= -self.solver_options.term_tol):
                     status = 0
                     if self.solver_options.print_level == "Verbose":
                         fk = 0.5 * xk.T @ G @ xk + c.T @ xk
+                        output_line = '%10d %20E %20E %20E %20E %20d' % \
+                                      (num_iter+1, fk[0][0], feasibility, alpha, np.linalg.norm(pk, 2), np.size(np.where(Wk == True)))
                         active_cons_idx = np.where(Wk == True)[0] + 1
-                        output_line = '%10d %20E %20E %20E %20E' % \
-                                      (num_iter+1, fk[0][0], feasibility, alpha, np.linalg.norm(pk, 2))
                         print(output_line)
-                    print('Optimal solution found')
+                    self.print_final_status(status)
                     return xk, lambda_sol, Wk, status
                 # Otherwise, remove the constraints with the most negative lambda
                 else:
@@ -132,7 +133,7 @@ class Solver:
 
                 # Check if there are blocking constraints
                 for i in range(len(Wk)):
-                    if Wk[i] == False and abs(np.dot(A[i, :], xk) - b[i]) <= 1e-6:
+                    if Wk[i] == False and abs(np.dot(A[i, :], xk) - b[i]) <= self.solver_options.feas_tol:
                         Wk[i] = True
                         break
             
@@ -140,7 +141,7 @@ class Solver:
             num_iter += 1
             if num_iter >= self.solver_options.max_iter:
                 status = 1
-                print('Maximum number of iterations reached')
+                self.print_final_status(status)
                 return xk, lambda_sol, Wk, status
 
     def solve_eq_qp(self, G, c, A, b, x0):
@@ -183,9 +184,10 @@ class Solver:
         return x_sol, lambda_sol, status
 
 
+
 np.random.seed(0)
 n = 10
-m = 10
+m = 100
 L = np.random.rand(n,n)
 G = np.matmul(L,L.T)
 c = 10*(0.5-np.random.rand(n,1))
@@ -193,17 +195,12 @@ A = 10*(0.5-np.random.rand(m,n))
 b = 10*(0.5-np.random.rand(m,1))
 x_feas = np.random.rand(n,1)
 b = A @ x_feas - 1
-# print("G: ", G)
-# print("c: ", c)
-# print("A: ", A)
-# print("b: ", b)
-# print("x_feas: ", x_feas)
 
 x0 = x_feas
 W0 = np.array([False]*m) # empty
-
 solver_options = solverOptions()
-solver_options.max_iter = 20
 solver = Solver(solver_options)
 x_sol, lambda_sol, W_sol, status = solver.active_set_solve(G, c, A, b, x0, W0)
-print(A @ x_sol - b)
+print("x_sol[:10]: ", x_sol.flatten()[:10])
+print("lambda_sol[:10]: ", lambda_sol.flatten()[:10])
+print("W_sol[:10]: ", (np.where(W_sol == True)[0] + 1)[:10])
