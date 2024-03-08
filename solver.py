@@ -47,19 +47,37 @@ class Solver:
         Wk = np.copy(W0)
         num_iter = 0
 
-        if self.solver_options.print_level == "Verbose":
-            output_header = '%6s     %20s %9s    %9s' % \
-                            ('iter', 'f', 'Wk', 'alpha')
-            print(output_header)
+        output_header = '%10s %20s %20s %20s %20s' % \
+                       ('iter', 'f_val', 'feas', 'alpha', '||p_k||')
 
         alpha = 0
+        pk = np.zeros(np.shape(xk))
+        lambda_sol = np.zeros((np.size(np.where(Wk == True)), 1))
         while True:
+            # Evaluate the objective function
             fk = 0.5 * xk.T @ G @ xk + c.T @ xk
+            
+            # Evaluate the feasibility
+            cons_k = A @ xk - b
+            feasibility = 0.0
+            tmp_1 = np.where(cons_k < 0)[0]
+            if np.size(tmp_1) > 0:
+                tmp_2 = np.hstack((0, cons_k[tmp_1[0]]))
+                feasibility = np.linalg.norm(tmp_2, np.inf)
+            
+            # Evaluate the first-order optimality
+            first_order_opt = np.linalg.norm(G @ xk + c, np.inf)
 
-            active_idx = np.where(Wk == True)[0] + 1
+            # Get the active constraints indices
+            active_cons_idx = np.where(Wk == True)[0] + 1
+            
+            # Print the iteration information
             if self.solver_options.print_level == "Verbose":
-                output_line = '%6d     %20s %9s         %4s' % \
-                            (num_iter, fk[0][0],  active_idx, alpha)
+                # Print header every 10 iterstion
+                if num_iter % 10 == 0:
+                    print(output_header)
+                output_line = '%10d %20E %20E %20E %20E' % \
+                              (num_iter, fk[0][0], feasibility, alpha, np.linalg.norm(pk, 2))
                 print(output_line)
 
             # Initialize active constraints matrix
@@ -74,11 +92,17 @@ class Solver:
             pk = x_sol - xk
             # If xk is a minimizer with Wk
             if np.linalg.norm(pk, np.inf) < self.solver_options.term_tol:
+                alpha = 0
                 # If the KKT conditions are satisfied, return
                 if np.all(lambda_sol >= -self.solver_options.term_tol):
                     status = 0
                     if self.solver_options.print_level == "Verbose":
-                        print('Optimal solution found')
+                        fk = 0.5 * xk.T @ G @ xk + c.T @ xk
+                        active_cons_idx = np.where(Wk == True)[0] + 1
+                        output_line = '%10d %20E %20E %20E %20E' % \
+                                      (num_iter+1, fk[0][0], feasibility, alpha, np.linalg.norm(pk, 2))
+                        print(output_line)
+                    print('Optimal solution found')
                     return xk, lambda_sol, Wk, status
                 # Otherwise, remove the constraints with the most negative lambda
                 else:
@@ -95,18 +119,20 @@ class Solver:
             # If xk is not a minimizer with Wk
             else:
                 # Find the step length
-                alpha = 1
+                tmp = np.inf
                 for i in range(len(Wk)):
                     if Wk[i] == False and np.dot(A[i, :], pk) < 0:
-                        tmp = (b[i] - np.dot(A[i, :], xk)) / np.dot(A[i, :], pk)
-                        alpha = min(alpha, tmp[0])
+                        tmp = min(tmp, (b[i] - np.dot(A[i, :], xk)) / np.dot(A[i, :], pk))                       
+                alpha = min(1, tmp)
+                if alpha != 1:
+                    alpha = alpha[0]
                 
                 # Update xk
                 xk = xk + alpha * pk
 
                 # Check if there are blocking constraints
                 for i in range(len(Wk)):
-                    if Wk[i] == False and np.dot(A[i, :], xk) - b[i] == 0:
+                    if Wk[i] == False and abs(np.dot(A[i, :], xk) - b[i]) <= 1e-6:
                         Wk[i] = True
                         break
             
@@ -114,8 +140,7 @@ class Solver:
             num_iter += 1
             if num_iter >= self.solver_options.max_iter:
                 status = 1
-                if self.solver_options.print_level == "Verbose":
-                    print('Maximum number of iterations reached')
+                print('Maximum number of iterations reached')
                 return xk, lambda_sol, Wk, status
 
     def solve_eq_qp(self, G, c, A, b, x0):
@@ -157,66 +182,28 @@ class Solver:
         status = 0
         return x_sol, lambda_sol, status
 
-# Example 1
-# min  q(x) = (x1-1)^2 + (x2-2.5)^2
-# s.t. -x1 + 2*x2 = -2
-#      x2 = 0
-# solver_options = solverOptions()
-# solver = Solver(solver_options)
-# G = np.array([[2, 0], [0, 2]])
-# c = np.array([[-2], [-5]])
-# A = np.array([[-1, 2], [0, 1]])
-# b = np.array([[-2], [0]])
 
-# x0 = np.array([[2], [0]])
-# x_sol, lambda_sol, status = solver.solve_eq_qp(G, c, A, b, x0)
-# assert np.allclose(x_sol, np.array([[2], [0]]))
+np.random.seed(0)
+n = 10
+m = 10
+L = np.random.rand(n,n)
+G = np.matmul(L,L.T)
+c = 10*(0.5-np.random.rand(n,1))
+A = 10*(0.5-np.random.rand(m,n))
+b = 10*(0.5-np.random.rand(m,1))
+x_feas = np.random.rand(n,1)
+b = A @ x_feas - 1
+# print("G: ", G)
+# print("c: ", c)
+# print("A: ", A)
+# print("b: ", b)
+# print("x_feas: ", x_feas)
 
-# Example 2
-# min  q(x) = (x1-1)^2 + (x2-2.5)^2
-# s.t. x1 - 2*x2 >= -2
-#      -x1 - 2*x2 >= -6
-#      -x1 + 2*x2 >= -2
-#      x1 >= 0
-#      x2 >= 0
-# solver_options = solverOptions()
-# solver = Solver(solver_options)
-# G = np.array([[2, 0], [0, 2]])
-# c = np.array([[-2], [-5]])
-# A = np.array([[1, -2], [-1, -2], [-1, 2], [1, 0], [0, 1]])
-# b = np.array([[-2], [-6], [-2], [0], [0]])
+x0 = x_feas
+W0 = np.array([False]*m) # empty
 
-# x0 = np.array([[2], [0]])
-
-# # W0 = np.array([False, False, False, False, False]) # empty
-# # W0 = np.array([False, False, True, False, True]) # 3, 5
-# # W0 = np.array([False, False, True, False, False]) # 3
-# W0 = np.array([False, False, False, False, True]) # 5
-
-# x_sol, lambda_sol, W_sol, status = solver.active_set_solve(G, c, A, b, x0, W0)
-# print("x_sol: ", x_sol.flatten())
-# print("lambda_sol: ", lambda_sol.flatten())
-# print("W_sol: ", np.where(W_sol == True)[0] + 1)
-
-# Example 3
-# min  q(x) = x1^2 + x2^2 - 6*x1 - 4*x2
-# s.t. -x1 - x2 >= -3
-#      x1 >= 0
-#      x2 >= 0
 solver_options = solverOptions()
+solver_options.max_iter = 20
 solver = Solver(solver_options)
-G = np.array([[2, 0], [0, 2]])
-c = np.array([[-6], [-4]])
-A = np.array([[-1, -1], [1, 0], [0, 1]])
-b = np.array([[-3], [0], [0]])
-
-# x0 = np.array([[0], [0]])
-x0 = np.array([[1], [1]])
-
-W0 = np.array([False, False, False]) # empty
-# W0 = np.array([False, True, True]) # 2, 3
-
 x_sol, lambda_sol, W_sol, status = solver.active_set_solve(G, c, A, b, x0, W0)
-print("x_sol: ", x_sol.flatten())
-print("lambda_sol: ", lambda_sol.flatten())
-
+print(A @ x_sol - b)
